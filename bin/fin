@@ -4432,62 +4432,56 @@ _exec ()
 		CONTAINER_NAME=$(echo "$1" | cut -d "=" -f 2)
 		shift
 	fi
-
+	# Assume cli if no container specified
 	CONTAINER_NAME=${CONTAINER_NAME:-cli}
 	container_id=$(get_container_id "$CONTAINER_NAME")
 
 	# ------------------------------------------------ #
-	# 1) cmd
-	local cmd
-
 	local cdir
-	# Only chdir to the same dir in cli container
+	# 1) Current path matching
+	# Change dir to the same dir in the container
 	# RUN_NO_CDIR can be used to override this (used in mysql_import)
-	if [[ "$CONTAINER_NAME" == "cli" ]] && [[ "$RUN_NO_CDIR" != 1 ]]; then
+	if [[ "$RUN_NO_CDIR" != 1 ]]; then
 		local path=$(get_current_relative_path)
 		if [[ "$path" != "" ]] ; then
-			# We are deeper than project root and thus need to do a cd
-			cdir="cd $path &&"
+			cdir="/var/www/$path"
 		fi
 	fi
-
-	cmd="$cdir"
 	# ------------------------------------------------ #
 
 	# ------------------------------------------------ #
-	# 2) convert array of parameters into escaped string
+	local cmd
+	# 2) Special Escaping
 	# Escape spaces that are "spaces" and not parameter delimiters (i.e. param1 param2\ with\ spaces param3)
-	if [[ $2 != "" ]]; then
+	# But do not escape spaces if there is only one parameter (e.g., fin run "ls -la | grep txt")
+	# This allows "raw" command execution. But it is only good for a single param (See issue #738)
+	if [[ $# > 1 ]]; then
 		cmd="$cmd "$(printf " %q" "$@")
-	# Do not escape spaces if there is only one parameter (e.g., fin run "ls -la | grep txt")
 	else
-		cmd="$cmd $@"
+		cmd="$@"
 	fi
 	# ------------------------------------------------ #
 
 	# ------------------------------------------------ #
-	# 3) execute
-	# Allow entering arbitrary containers by name (e.g., system containers like vhost-proxy).
+	# 3) Execution
+	# Allow entering into shell of an arbitrary containers by its name (e.g., system containers like vhost-proxy).
 	if [[ "$container_id" == "" ]]; then
 		${winpty} docker exec -it "$CONTAINER_NAME" sh -i
 		return
 	fi
 
+	# Force user docker for cli container, not root.
 	if [[ "$CONTAINER_NAME" == "cli" ]]; then
-		# Commands in cli should be run using the docker user, not root.
 		local container_user='-u docker'
 	fi
 
-	# Enter project containers
-	# Use the docker user in cli (-u docker) instead of root (default user).
 	# COLUMNS and LINES have to be passed to workaround a bug in Docker. See https://github.com/moby/moby/issues/35407#issuecomment-355753176
 	if is_tty && [[ "$no_tty" != true ]]; then
 		# interactive
-		# (exit \$?) is a hack to return correct exit codes when docker exec is run with tty (-t).
-		${winpty} docker exec -e COLUMNS -e LINES -it ${container_user} ${container_id} bash -ilc "$cmd; (exit \$?)"
+		${winpty} docker exec --workdir "$cdir" -e COLUMNS -e LINES -it ${container_user} ${container_id} bash -ilc "$cmd"
 	else
 		# non-interactive
-		docker exec -e COLUMNS -e LINES ${container_user} ${container_id} bash -lc "$cmd"
+		docker exec --workdir "$cdir" -e COLUMNS -e LINES ${container_user} ${container_id} bash -lc "$cmd"
 	fi
 	# ------------------------------------------------ #
 }
